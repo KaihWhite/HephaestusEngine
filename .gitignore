@@ -1,0 +1,33 @@
+# Binaries
+**/bin/
+bin-int/
+Intermediates/
+
+# files
+*.log
+x64/
+
+# Visual Studio files and folder
+.vs/
+**.sln
+**.vcxproj
+**.vcxproj.filters
+**.vcxproj.user
+**.csproj
+
+# Xcode and Mac files and folder
+*.xcodeproj
+*.xcworkspace
+*.xcuserstate
+.DS_Store
+
+
+# Directories
+scripts/__pycache__
+Dependencies/VulkanSDK/Config/
+Dependencies/VulkanSDK/Demos/
+Dependencies/VulkanSDK/Helpers/
+Dependencies/VulkanSDK/installerResources/
+Dependencies/VulkanSDK/share/
+Dependencies/VulkanSDK/Templates/
+Dependencies/VulkanSDK/*.*
