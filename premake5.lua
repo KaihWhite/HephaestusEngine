@@ -20,19 +20,19 @@ project "Engine"
 
    -- Windows specific settings
    filter "system:windows"
-      includedirs { IncludeDir["GLFW"] .. "/Windows/include", IncludeDir["glm"], IncludeDir["Vulkan"] .. "/Include"}
-      libdirs { IncludeDir["GLFW"] .. "/Windows/lib-vc2022", IncludeDir["Vulkan"] .. "/Lib"}
+      includedirs { IncludeDir["Vulkan"] .. "/Include", IncludeDir["GLFW"] .. "/Windows/include", IncludeDir["glm"] }
+      libdirs { IncludeDir["Vulkan"] .. "/Lib", IncludeDir["GLFW"] .. "/Windows/lib-vc2022" }
       architecture "x64"
       systemversion "latest"
       defines { "PLATFORM_WINDOWS" }
-      links { "glfw3", "vulkan-1"}
+      links { "vulkan-1", "glfw3" }
 
       
    -- TODO MacOS specific settings
    -- filter "system:macosx"
    --    includedirs { IncludeDir["GLFW"] .. "/MacOS/include" }
    --    libdirs { IncludeDir["GLFW"] .. "/MacOS/lib-arm64" }
-   --    links { "glfw3" }
+   --    links { "vulkan-1", "glfw3" }
    --    architecture "arm64" -- or "x64" for Intel, "arm64" for M1 specifically, or "universal"
    --    systemversion "latest"
    --    defines { "PLATFORM_MACOS" }
