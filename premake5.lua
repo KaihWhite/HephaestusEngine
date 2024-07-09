@@ -1,4 +1,4 @@
-workspace "OurEngine"
+workspace "HephaestusEngine"
    configurations { "Debug", "Release" }
    startproject "Engine"
 
