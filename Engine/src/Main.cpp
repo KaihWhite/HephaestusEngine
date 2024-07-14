@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <vector>
 #include <map>
+#include <set>
 #include <optional>
 
 class Engine {
@@ -14,6 +15,7 @@ public:
 	const uint32_t WIDTH = 800;
 	const uint32_t HEIGHT = 600;
 
+	// TODO: Validation layer does not currently exist. Must fix this on my system before debugging will work
 	// Validation layers - used for debugging
 	const std::vector<const char*> validationLayers = {
 	"VK_LAYER_KHRONOS_validation"
@@ -37,9 +39,14 @@ public:
 private:
     GLFWwindow* window;
 	VkInstance instance;
+
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 
-	VkDevice device;
+	const std::vector<const char*> deviceExtensions = {
+	VK_KHR_SWAPCHAIN_EXTENSION_NAME
+	};
+
+	VkDevice logicalDevice;
 
 	VkQueue graphicsQueue;
 	VkQueue presentQueue;
@@ -68,7 +75,7 @@ private:
 	}
 
     void cleanup() {
-		vkDestroyDevice(device, nullptr);
+		vkDestroyDevice(logicalDevice, nullptr);
 
 		vkDestroySurfaceKHR(instance, surface, nullptr);
 
@@ -81,6 +88,7 @@ private:
 	/*---------------------------------------------------------------------------------*/
 
 	/*-------------------------------Find Physical Device------------------------------*/
+	// Find and set the physical device (GPU) that will be used to run the program
 	void pickPhysicalDevice() {
 		uint32_t deviceCount = 0;
 		vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
@@ -95,7 +103,7 @@ private:
 		std::multimap<int, VkPhysicalDevice> candidates;
 
 		for (const auto& device : devices) {
-			int score = rateDevice(device);
+			int score = ratePhysicalDevice(device);
 			candidates.insert(std::make_pair(score, device));
 		}
 
@@ -112,7 +120,8 @@ private:
 		}
 	}
 
-	int rateDevice(VkPhysicalDevice device) {
+	// Rate a GPU based on its properties and features and return a score representing its performance capabilities
+	int ratePhysicalDevice(VkPhysicalDevice device) {
 		VkPhysicalDeviceProperties deviceProperties;
 		vkGetPhysicalDeviceProperties(device, &deviceProperties);
 
@@ -131,13 +140,33 @@ private:
 		// Maximum possible size of textures affects graphics quality
 		score += deviceProperties.limits.maxImageDimension2D;
 
-		// Application can't function without geometry shaders
-		if (!deviceFeatures.geometryShader || !indices.isComplete()) {
+		bool extensionsSupported = checkDeviceExtensionSupport(device);
+
+		// Application can't function without geometry shaders, available queues, and required extensions
+		if (!deviceFeatures.geometryShader || !indices.isComplete() || !extensionsSupported) {
 			return 0;
 		}
 
 		return score;
 	}
+
+	// Check if the GPU supports the required extensions
+	bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+		uint32_t extensionCount;
+		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+
+		std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
+
+		std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
+
+		for (const auto& extension : availableExtensions) {
+			requiredExtensions.erase(extension.extensionName);
+		}
+
+		return requiredExtensions.empty();
+	}
+
 	/*---------------------------------------------------------------------------------*/
 
 	/*--------------------Create Vulkan Instance and Logical Device--------------------*/
@@ -188,10 +217,13 @@ private:
 		std::vector<VkLayerProperties> availableLayers(layerCount);
 		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
 
+		// std::cout << "layerCount: " << layerCount << std::endl;
+
 		for (const char* layerName : validationLayers) {
 			bool layerFound = false;
 
 			for (const auto& layerProperties : availableLayers) {
+				// std::cout << "layerName: " << layerProperties.layerName << std::endl;
 				if (strcmp(layerName, layerProperties.layerName) == 0) {
 					layerFound = true;
 					break;
@@ -212,29 +244,45 @@ private:
 		}
 	}
 
+	// Create the logical device that interfaces with the physical device -- this creates the queues that will be used to interface with the physical device
 	void createLogicalDevice() {
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
 		// Continue here at "Creating the presentation queue" in the Window Surface section of the tutorial
 
+		std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+		std::set<uint32_t> uniqueQueueFamilies = { indices.graphicsFamily.value(), indices.presentFamily.value() };
+
+		float queuePriority = 1.0f; // assignable priority of this queue, 0.0f to 1.0f, that influences the scheduling of command buffer execution (within the family?). Required even if there is only one queue
+		for (uint32_t queueFamily : uniqueQueueFamilies) {
+			VkDeviceQueueCreateInfo queueCreateInfo{};
+			queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+			queueCreateInfo.queueFamilyIndex = queueFamily;
+			queueCreateInfo.queueCount = 1; // apparently current drivers only support a few queues per family, but "you don't really need more than one", I guess I'll see for myself
+			queueCreateInfo.pQueuePriorities = &queuePriority;
+			queueCreateInfos.push_back(queueCreateInfo);
+		}
+		
+		/*
+		* Old code for creating a single queue, now we create a queue for each family that we need
 		VkDeviceQueueCreateInfo queueCreateInfo{};
 		queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 		queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
-		queueCreateInfo.queueCount = 1; // apparently current drivers only support a few queues per family, but "you don't really need more than one", I guess I'll see for myself
+		queueCreateInfo.queueCount = 1; 
 
-		float queuePriority = 1.0f; // assignable priority of this queue, 0.0f to 1.0f, that influences the scheduling of command buffer execution (within the family?). Required even if there is only one queue
+		float queuePriority = 1.0f; 
 		queueCreateInfo.pQueuePriorities = &queuePriority;
+		*/
 		
 		VkPhysicalDeviceFeatures deviceFeatures{}; // Used to enable or disable available features on chosen physical device
+
 		VkDeviceCreateInfo createInfo{};
 		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-
-		createInfo.pQueueCreateInfos = &queueCreateInfo;
-		createInfo.queueCreateInfoCount = 1;
-
+		createInfo.pQueueCreateInfos = queueCreateInfos.data();
+		createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
 		createInfo.pEnabledFeatures = &deviceFeatures; // setting our enabled features
-
-		createInfo.enabledExtensionCount = 0; // Vulkan allows for device specific extensions
+		createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+		createInfo.ppEnabledExtensionNames = deviceExtensions.data(); // setting the device specific extensions
 
 		// Validation layers -- used for debugging
 		if (enableValidationLayers) {
@@ -246,15 +294,17 @@ private:
 		}
 
 		// Create logical device
-		if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS) {
+		if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &logicalDevice) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create logical device!");
 		}
 
-		vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue); // assign the graphics queue that was created with the logical device (will likely move this later on)
+		// until I optimize the findQueueFamilies function to choose different and independent queues for different operations, graphicsQueue and presentQueue will hold the same value (point to the same queue)
+		vkGetDeviceQueue(logicalDevice, indices.graphicsFamily.value(), 0, &graphicsQueue); // assign the graphics queue that was created with the logical device (will likely move this later on)
+		vkGetDeviceQueue(logicalDevice, indices.presentFamily.value(), 0, &presentQueue); // assign the present queue that was created with the logical device (will likely move this later on)
 	}
 	/*---------------------------------------------------------------------------------*/
 
-	/*----------------------------------Define Queues----------------------------------*/
+	/*-------------------------------Queues and Swapchain------------------------------*/
 	struct QueueFamilyIndices {
 		std::optional<uint32_t> graphicsFamily;
 		std::optional<uint32_t> presentFamily;
@@ -262,6 +312,12 @@ private:
 		bool isComplete() {
 			return graphicsFamily.has_value() && presentFamily.has_value();
 		}
+	};
+
+	struct SwapChainSupportDetails {
+		VkSurfaceCapabilitiesKHR capabilities;
+		std::vector<VkSurfaceFormatKHR> formats;
+		std::vector<VkPresentModeKHR> presentModes;
 	};
 
 	//TODO: Optimize this function to choose the best available queue families for the operations we need. Currently it just chooses the first one that supports the operations meaning that one queue might be fulfilling multiple tasks, which isn't optimal
@@ -298,6 +354,25 @@ private:
 		}
 
 		return indices;
+	}
+	
+	// Return the swap chain support details for the physical device
+	SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device) {
+		SwapChainSupportDetails details;
+
+		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities); // get the capabilities of the surface and GPU
+
+		uint32_t formatCount;
+		vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr); // get surface formats supported by the GPU
+
+		if (formatCount != 0) {
+			details.formats.resize(formatCount);
+			vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
+		}
+
+		// Continue here from "Querying details of swap chain support" in the Swap Chain section of the tutorial
+
+		return details;
 	}
 	/*---------------------------------------------------------------------------------*/
 };
