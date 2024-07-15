@@ -8,6 +8,8 @@
 #include <map>
 #include <set>
 #include <optional>
+#include <algorithm>
+#include <limits>
 
 class Engine {
 public:
@@ -52,6 +54,12 @@ private:
 	VkQueue presentQueue;
 	
 	VkSurfaceKHR surface;
+
+	VkSwapchainKHR swapChain;
+	std::vector<VkImage> swapChainImages;
+	VkFormat swapChainImageFormat;
+	VkExtent2D swapChainExtent;
+
 	/*-----------------------------Initialization and Cleanup-----------------------------*/
     void initWindow() {
 		glfwInit();
@@ -66,6 +74,7 @@ private:
 		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
+		createSwapChain();
 	}
 
     void mainLoop() {
@@ -75,6 +84,8 @@ private:
 	}
 
     void cleanup() {
+		vkDestroySwapchainKHR(logicalDevice, swapChain, nullptr);
+
 		vkDestroyDevice(logicalDevice, nullptr);
 
 		vkDestroySurfaceKHR(instance, surface, nullptr);
@@ -142,8 +153,14 @@ private:
 
 		bool extensionsSupported = checkDeviceExtensionSupport(device);
 
+		bool adequateSwapChain = false;
+		if (extensionsSupported) {
+			SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device);
+			adequateSwapChain = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
+		}
+
 		// Application can't function without geometry shaders, available queues, and required extensions
-		if (!deviceFeatures.geometryShader || !indices.isComplete() || !extensionsSupported) {
+		if (!deviceFeatures.geometryShader || !indices.isComplete() || !adequateSwapChain) {
 			return 0;
 		}
 
@@ -365,14 +382,122 @@ private:
 		uint32_t formatCount;
 		vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr); // get surface formats supported by the GPU
 
+		// At least one format must be supported
 		if (formatCount != 0) {
 			details.formats.resize(formatCount);
 			vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
 		}
 
-		// Continue here from "Querying details of swap chain support" in the Swap Chain section of the tutorial
+		uint32_t presentModeCount;
+		vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, nullptr);
+
+		// At least one present mode must be supported
+		if (presentModeCount != 0) {
+			details.presentModes.resize(presentModeCount);
+			vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, details.presentModes.data());
+		}
 
 		return details;
+	}
+	
+	// Surface Format specifies the color channels, types, and color(bit) depth
+	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
+		for (const auto& availableFormat : availableFormats) {
+			if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+				return availableFormat; // desired format is SRGB, 8 bit depth (per channel), 32 bit total
+			}
+		}
+		// TODO: rank available formats and choose the best one
+		return availableFormats[0]; // For now, if the desired format is not available, just return the first available format
+	}
+
+	// Presentation mode specifies the conditions for "swapping" the image to the screen, known as Vertical Sync (Vsync).
+	VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
+		for (const auto& availablePresentMode : availablePresentModes) {
+			if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) { // prefered mode is triple buffering, but Vsync off is VK_PRESENT_MODE_IMMEDIATE_KHR
+				return availablePresentMode; // TODO: allow user to choose their prefered presentation mode (VySync on/off)
+			}
+		}
+		return VK_PRESENT_MODE_FIFO_KHR; // guaranteed to be available -- regular Vsync
+	}
+
+	// Swap extent is the resolution of the swap chain images. It is almost always equal to the resolution of the window we're drawing to in pixels
+	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) {
+		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+			return capabilities.currentExtent;
+		}
+		else {
+			int width, height;
+			glfwGetFramebufferSize(window, &width, &height);
+
+			VkExtent2D actualExtent = {
+				static_cast<uint32_t>(width),
+				static_cast<uint32_t>(height)
+			};
+
+			actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+			actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+
+			return actualExtent;
+		}
+	}
+
+	void createSwapChain() {
+		SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
+
+		VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
+		VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
+		VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
+
+		uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1; // minimum number of images in the swap chain
+		if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount) {
+			imageCount = swapChainSupport.capabilities.maxImageCount;
+		}
+
+		VkSwapchainCreateInfoKHR createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+		createInfo.surface = surface;
+
+		createInfo.minImageCount = imageCount;
+		createInfo.imageFormat = surfaceFormat.format;
+		createInfo.imageColorSpace = surfaceFormat.colorSpace;
+		createInfo.imageExtent = extent;
+		createInfo.imageArrayLayers = 1;
+		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // This field specifies what kind of operations the images in the swap chain will be used for
+		/* Since for now we are rendering directly to the images in the swap chain, they are used as color attachment. If, say, we wanted to perform post-processing 
+		 by rendering images to a different, separate image first, we would use a value like VK_IMAGE_USAGE_TRANSFER_DST_BIT instead and use a memory operation to
+		 transfer the rendered image to a swap chain image. */
+
+		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+		uint32_t queueFamilyIndices[] = { indices.graphicsFamily.value(), indices.presentFamily.value() };
+
+		if (indices.graphicsFamily != indices.presentFamily) {
+			// TODO: Implement ownership transfer of swap chain images if the graphics and present queues are different so that Exclusive mode can be used, which is more efficient
+			createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT; // until then, use Concurrent mode
+			createInfo.queueFamilyIndexCount = 2; // must have two distinct queues for concurrent mode -- required with concurrent mode
+			createInfo.pQueueFamilyIndices = queueFamilyIndices; // which queues will be shared for concurrent mode -- required with concurrent mode
+		}
+		else {
+			createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			createInfo.queueFamilyIndexCount = 0; // Optional for exclusive mode
+			createInfo.pQueueFamilyIndices = nullptr; // Optional for exclusive mode
+		}
+
+		createInfo.preTransform = swapChainSupport.capabilities.currentTransform; // specifies the transform to be applied to the image before presentation -- like a rotation or flip -- right now it is set to do nothing
+		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // specifies if the alpha channel should be used for blending with other windows in the system -- right now it is set to ignore the alpha channel
+		createInfo.presentMode = presentMode;
+		createInfo.clipped = VK_TRUE; // set to not care about the color of obscured pixels (like those behind another window)
+		createInfo.oldSwapchain = VK_NULL_HANDLE; // used to create a new swap chain if the old one becomes invalid (like window resizing) TODO: Implement this
+
+		if (vkCreateSwapchainKHR(logicalDevice, &createInfo, nullptr, &swapChain) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create swap chain!");
+		}
+
+		vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, nullptr);
+		swapChainImages.resize(imageCount);
+		vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, swapChainImages.data());
+		swapChainImageFormat = surfaceFormat.format;
+		swapChainExtent = extent;
 	}
 	/*---------------------------------------------------------------------------------*/
 };
