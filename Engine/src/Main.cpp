@@ -1,15 +1,6 @@
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-#include <vulkan/vulkan.h>
-#include <iostream>
-#include <stdexcept>
-#include <cstdlib>
-#include <vector>
-#include <map>
-#include <set>
-#include <optional>
-#include <algorithm>
-#include <limits>
+#pragma once
+
+#include "../headers/engine.h"
 
 class Engine {
 public:
@@ -57,8 +48,11 @@ private:
 
 	VkSwapchainKHR swapChain;
 	std::vector<VkImage> swapChainImages;
+	std::vector<VkImageView> swapChainImageViews;
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
+
+	ShaderManager* shaderManager;
 
 	/*-----------------------------Initialization and Cleanup-----------------------------*/
     void initWindow() {
@@ -75,6 +69,8 @@ private:
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createSwapChain();
+		createImageViews();
+		createGraphicsPipeline();
 	}
 
     void mainLoop() {
@@ -84,6 +80,11 @@ private:
 	}
 
     void cleanup() {
+
+		for (auto imageView : swapChainImageViews) {
+			vkDestroyImageView(logicalDevice, imageView, nullptr);
+		}
+
 		vkDestroySwapchainKHR(logicalDevice, swapChain, nullptr);
 
 		vkDestroyDevice(logicalDevice, nullptr);
@@ -186,7 +187,7 @@ private:
 
 	/*---------------------------------------------------------------------------------*/
 
-	/*--------------------Create Vulkan Instance and Logical Device--------------------*/
+	/*------------------------------Create Vulkan Instance-----------------------------*/
 	void createInstance() {
 
 		if (enableValidationLayers && !checkValidationLayerSupport()) {
@@ -318,6 +319,12 @@ private:
 		// until I optimize the findQueueFamilies function to choose different and independent queues for different operations, graphicsQueue and presentQueue will hold the same value (point to the same queue)
 		vkGetDeviceQueue(logicalDevice, indices.graphicsFamily.value(), 0, &graphicsQueue); // assign the graphics queue that was created with the logical device (will likely move this later on)
 		vkGetDeviceQueue(logicalDevice, indices.presentFamily.value(), 0, &presentQueue); // assign the present queue that was created with the logical device (will likely move this later on)
+	}
+
+	// Create the basic graphics pipeline that will be used to render the 2d images -- a different pipeline has to be created for any different rendering style so I'll likely have to create a new one for 3d rendering and more
+	void createGraphicsPipeline() {
+		shaderManager = new ShaderManager(logicalDevice); // might store this on the heap later on when I need access to uniforms in the shaders
+		shaderManager->createGraphicsPipeline();
 	}
 	/*---------------------------------------------------------------------------------*/
 
@@ -498,6 +505,34 @@ private:
 		vkGetSwapchainImagesKHR(logicalDevice, swapChain, &imageCount, swapChainImages.data());
 		swapChainImageFormat = surfaceFormat.format;
 		swapChainExtent = extent;
+	}
+
+	void createImageViews() {
+		swapChainImageViews.resize(swapChainImages.size());
+		for (size_t i = 0; i < swapChainImages.size(); i++) {
+			VkImageViewCreateInfo createInfo{};
+			createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			createInfo.image = swapChainImages[i];
+
+			createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D; // determines how textures are treated/interpreted: 1D, 2D, 3D, or cube map
+			createInfo.format = swapChainImageFormat;
+
+			createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY; // These 4 fields allow for remapping of color channels (like swapping red and blue channels)
+			createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+			// The subresourceRange field describes what the image's purpose is and which part of the image should be accessed. We are using the image as a color target without any mipmapping levels or multiple layers.
+			createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			createInfo.subresourceRange.baseMipLevel = 0;
+			createInfo.subresourceRange.levelCount = 1;
+			createInfo.subresourceRange.baseArrayLayer = 0;
+			createInfo.subresourceRange.layerCount = 1;
+
+			if (vkCreateImageView(logicalDevice, &createInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create image views!");
+			}
+		}
 	}
 	/*---------------------------------------------------------------------------------*/
 };
