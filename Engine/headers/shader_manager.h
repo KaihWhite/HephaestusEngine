@@ -8,15 +8,13 @@
 
 class ShaderManager {
 
-public:
-
-    ShaderManager(VkDevice device);
-
-    void createGraphicsPipeline();
-
 private:
 
-    VkDevice device;
+    VkDevice logicalDevice;
+
+public:
+
+    ShaderManager(VkDevice &logicalDevice);
 
     VkShaderModule createShaderModule(const std::vector<char>& code);
 
