@@ -56,6 +56,8 @@ private:
 	VkPipelineLayout pipelineLayout;
 	VkPipeline graphicsPipeline;
 
+	std::vector<VkFramebuffer> swapChainFramebuffers;
+
 	/*-----------------------------Initialization and Cleanup-----------------------------*/
     void initWindow() {
 		glfwInit();
@@ -74,6 +76,7 @@ private:
 		createImageViews();
 		createRenderPass();
 		createGraphicsPipeline();
+		createFramebuffers();
 	}
 
     void mainLoop() {
@@ -83,6 +86,10 @@ private:
 	}
 
     void cleanup() {
+
+		for (auto framebuffer : swapChainFramebuffers) {
+			vkDestroyFramebuffer(logicalDevice, framebuffer, nullptr);
+		}
 
 		vkDestroyPipeline(logicalDevice, graphicsPipeline, nullptr);
 
@@ -460,11 +467,13 @@ private:
 			throw std::runtime_error("failed to create pipeline layout!");
 		}
 
+		// create graphics pipeline with everything we've set up for it
 		VkGraphicsPipelineCreateInfo pipelineInfo{};
 		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 		pipelineInfo.stageCount = 2;
 		pipelineInfo.pStages = shaderStages;
 
+		// fixed-function stage
 		pipelineInfo.pVertexInputState = &vertexInputInfo;
 		pipelineInfo.pInputAssemblyState = &inputAssembly;
 		pipelineInfo.pViewportState = &viewportState;
@@ -474,13 +483,16 @@ private:
 		pipelineInfo.pColorBlendState = &colorBlending;
 		pipelineInfo.pDynamicState = &dynamicState;
 
+		// pipeline layout
 		pipelineInfo.layout = pipelineLayout;
 
+		// render pass
 		pipelineInfo.renderPass = renderPass;
-		pipelineInfo.subpass = 0;
+		pipelineInfo.subpass = 0; // index of th sub pass where the graphics pipeline will be used
 
-		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
-		pipelineInfo.basePipelineIndex = -1; // Optional
+		// These parameters are used to create a new pipeline by deriving from an existing pipeline. Only used if the VK_PIPELINE_CREATE_DERIVATIVE_BIT flag is set in the flags field of the VkGraphicsPipelineCreateInfo struct
+		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional - a pipeline to derive from
+		pipelineInfo.basePipelineIndex = -1; // Optional - an index to derive from
 
 		if (vkCreateGraphicsPipelines(logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create graphics pipeline!");
@@ -528,6 +540,31 @@ private:
 
 		if (vkCreateRenderPass(logicalDevice, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create render pass!");
+		}
+	}
+
+	// Create the framebuffers that will be used modify the images in the swap chain. You need one framebuffer for each image in the swap chain
+	void createFramebuffers() {
+		swapChainFramebuffers.resize(swapChainImageViews.size());
+
+		// Create a framebuffer for each image view
+		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+			VkImageView attachments[] = {
+				swapChainImageViews[i]
+			};
+
+			VkFramebufferCreateInfo framebufferInfo{};
+			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			framebufferInfo.renderPass = renderPass;
+			framebufferInfo.attachmentCount = 1;
+			framebufferInfo.pAttachments = attachments;
+			framebufferInfo.width = swapChainExtent.width;
+			framebufferInfo.height = swapChainExtent.height;
+			framebufferInfo.layers = 1; // number of layers/images in image arrays. This is 1 because we are using single images
+
+			if (vkCreateFramebuffer(logicalDevice, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create framebuffer!");
+			}
 		}
 	}
 	/*---------------------------------------------------------------------------------*/
