@@ -58,6 +58,16 @@ private:
 
 	std::vector<VkFramebuffer> swapChainFramebuffers;
 
+	VkCommandPool commandPool;
+	VkCommandBuffer commandBuffer;
+
+	/* Semaphores and fences to synchronize rendering since all operations are asynchronous.
+	Semaphores are for ordering the operations on the GPU itself.
+	Fences are for ordering the CPU to wait for GPU operations to keep them in sync. */
+	VkSemaphore imageAvailableSemaphore;
+	VkSemaphore renderFinishedSemaphore;
+	VkFence inFlightFence;
+
 	/*-----------------------------Initialization and Cleanup-----------------------------*/
     void initWindow() {
 		glfwInit();
@@ -77,15 +87,56 @@ private:
 		createRenderPass();
 		createGraphicsPipeline();
 		createFramebuffers();
+		createCommandPool();
+		createCommandBuffer();
+		createSyncObjects();
 	}
 
     void mainLoop() {
         while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
+			drawFrame();
 		}
 	}
 
+	void drawFrame() {
+		// wait for the fence to signal that the frame is finished
+		vkWaitForFences(logicalDevice, 1, &inFlightFence, VK_TRUE, UINT64_MAX); // parameters: device, number of fences, array of fences, wait for all fences to be signaled, timeout
+		vkResetFences(logicalDevice, 1, &inFlightFence); // reset the fence to unsignaled
+
+		uint32_t imageIndex;
+		vkAcquireNextImageKHR(logicalDevice, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex); // parameters: device, swap chain, timeout, semaphore to signal when image is acquired, fence to signal when image is acquired, variable to store the index of the acquired swap chain image
+
+		vkResetCommandBuffer(commandBuffer, 0); // reset the command buffer to the initial state. parameters: command buffer, flags (optional)
+		recordCommandBuffer(commandBuffer, imageIndex); // record the command buffer
+
+		// submit the command buffer to the graphics queue
+		VkSubmitInfo submitInfo{};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+		VkSemaphore waitSemaphores[] = { imageAvailableSemaphore }; // specify the semaphores to wait on
+		VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}; // specify the pipeline stages that the semaphore waits on
+		submitInfo.waitSemaphoreCount = 1;
+		submitInfo.pWaitSemaphores = waitSemaphores;
+		submitInfo.pWaitDstStageMask = waitStages;
+
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffer;
+
+		VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = signalSemaphores;
+		
+		// CONTINUE HERE
+	}
+
     void cleanup() {
+
+		vkDestroySemaphore(logicalDevice, imageAvailableSemaphore, nullptr);
+		vkDestroySemaphore(logicalDevice, renderFinishedSemaphore, nullptr);
+		vkDestroyFence(logicalDevice, inFlightFence, nullptr);
+
+		vkDestroyCommandPool(logicalDevice, commandPool, nullptr);
 
 		for (auto framebuffer : swapChainFramebuffers) {
 			vkDestroyFramebuffer(logicalDevice, framebuffer, nullptr);
@@ -141,7 +192,6 @@ private:
 		else {
 			throw std::runtime_error("failed to find a suitable Gpu!");
 		}
-
 
 		if (this->physicalDevice == VK_NULL_HANDLE) {
 			throw std::runtime_error("failed to find a suitable GPU!");
@@ -282,8 +332,6 @@ private:
 	// Create the logical device that interfaces with the physical device -- this creates the queues that will be used to interface with the physical device
 	void createLogicalDevice() {
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-
-		// Continue here at "Creating the presentation queue" in the Window Surface section of the tutorial
 
 		std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
 		std::set<uint32_t> uniqueQueueFamilies = { indices.graphicsFamily.value(), indices.presentFamily.value() };
@@ -567,6 +615,108 @@ private:
 			}
 		}
 	}
+
+	// Create the drawing operations command pool
+	void createCommandPool(){
+		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+		VkCommandPoolCreateInfo poolInfo{};
+		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(); // the queue family that will execute the command buffers - currently the graphics queue family for drawing commands
+		// You need a different command pool for each type of queue family. If you want to be able to submit multiple command buffers simultaneously to multiple types of queues, then you should create one command pool for each type of queue
+
+		if (vkCreateCommandPool(logicalDevice, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create graphics command pool!");
+		}
+	}
+
+	// Create the command buffer that will be used to record the drawing operations
+	void createCommandBuffer() {
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = commandPool;
+		// two possible entries for the level parameter below: primary command buffers can be submitted to a queue for execution, but cannot be called from other command buffers. Secondary command buffers cannot be submitted directly, but can be called from primary command buffers
+		// secondary command buffers are especially useful for organizing and reusing command sequences within primary command buffers (think resuable functions)
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = 1; // number of command buffers to allocate
+
+		if (vkAllocateCommandBuffers(logicalDevice, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate command buffers for drawing operations!");
+		}
+	}
+
+	// Record the drawing operations to the command buffer
+	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		beginInfo.flags = 0; // Optional - specifies how the command buffer will be used
+		beginInfo.pInheritanceInfo = nullptr; // Optional - used for secondary command buffers. Specifies which state to inherit from the primary command buffer
+
+		// if the command buffer was already recorded once, then a call to vkBeginCommandBuffer will reset it. You cannot append commands to a buffer that has already been recorded
+		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+			throw std::runtime_error("failed to begin recording command buffer!");
+		}
+
+		// Command buffer recording start
+		VkRenderPassBeginInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassInfo.renderPass = renderPass;
+		renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; // what attachments to bind to the render pass. We created one framebuffer for each swap chain image, so we bind them accordingly
+
+		// Define the size of the render area. Should match the size of the attachments for best performance
+		renderPassInfo.renderArea.offset = {0, 0}; // starting point of the render area
+		renderPassInfo.renderArea.extent = swapChainExtent; // size of the render area
+
+		// Clear the screen to black before every frame
+		VkClearValue clearColor = { {{0.0f, 0.0f, 0.0f, 1.0f}} }; // Create a clear (as in clear the screen) value for the color attachment. This will be black and fully opaque
+		renderPassInfo.clearValueCount = 1;
+		renderPassInfo.pClearValues = &clearColor;
+
+		// Begin the render pass
+		vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE); // The third parameter specifies how the commands will be provided. The only options are the render pass comes imbdedded in the primary command buffer or the render pass is executed from secondary command buffers
+
+		// Bind the graphics pipeline
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+		// set dynamic viewport
+		VkViewport viewport{};
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width = static_cast<float>(swapChainExtent.width);
+		viewport.height = static_cast<float>(swapChainExtent.height);
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+		// set dynamic scissor (cutoff)
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = swapChainExtent;
+		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+		vkCmdDraw(commandBuffer, 3, 1, 0, 0); // draw command - parameters: vertex count, instance count, first vertex, first instance
+
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to record command buffer!");
+		}
+	}
+
+	// Create the semaphores and fences that will be used to synchronize the rendering operations
+	void createSyncObjects() {
+		VkSemaphoreCreateInfo semaphoreInfo{};
+		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+		VkFenceCreateInfo fenceInfo{};
+		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // start the fence in the signaled state so that the first wait doesn't wait forever
+
+		if (vkCreateSemaphore(logicalDevice, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS ||
+			vkCreateSemaphore(logicalDevice, &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS ||
+			vkCreateFence(logicalDevice, &fenceInfo, nullptr, &inFlightFence) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create semaphores!");
+		}
+	}
 	/*---------------------------------------------------------------------------------*/
 
 	/*-------------------------------Queues and Swapchain------------------------------*/
@@ -585,7 +735,7 @@ private:
 		std::vector<VkPresentModeKHR> presentModes;
 	};
 
-	//TODO: Optimize this function to choose the best available queue families for the operations we need. Currently it just chooses the first one that supports the operations meaning that one queue might be fulfilling multiple tasks, which isn't optimal
+	// TODO: Optimize this function to choose the best available queue families for the operations we need. Currently it just chooses the first one that supports the operations meaning that one queue might be fulfilling multiple tasks, which isn't optimal
 	// Find the queue families that are supported by the physical device for specific operations
 	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
 		QueueFamilyIndices indices;
